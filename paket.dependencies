@@ -1,6 +1,6 @@
 source https://nuget.org/api/v2
 
-nuget FSharp.Core redirects: force
+nuget FSharp.Core ~> 4.1 redirects: force
 nuget Suave
 nuget Freya >= 4.0.0 prerelease
 nuget Argu
