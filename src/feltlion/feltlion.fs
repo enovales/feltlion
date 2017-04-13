@@ -9,22 +9,22 @@ open Suave.Successful
 
 type SlackRequest =
     {
-        Token       : string
-        TeamId      : string
-        TeamDomain  : string
-        ChannelId   : string
-        ChannelName : string
-        UserId      : string
-        UserName    : string
-        Command     : string
-        Text        : string
-        ResponseUrl : string
+        Token       : string option
+        TeamId      : string option
+        TeamDomain  : string option
+        ChannelId   : string option
+        ChannelName : string option
+        UserId      : string option
+        UserName    : string option
+        Command     : string option
+        Text        : string option
+        ResponseUrl : string option
     }
     static member FromHttpContext (ctx : HttpContext) =
         let get key =
             match ctx.request.formData key with
-            | Choice1Of2 x  -> x
-            | _             -> ""
+            | Choice1Of2 x  -> Some(x)
+            | _             -> None
         {
             Token       = get "token"
             TeamId      = get "team_id"
@@ -38,11 +38,34 @@ type SlackRequest =
             ResponseUrl = get "response_url"
         }
 
+type SlackResponseType = 
+    | Ephemeral
+    | InChannel
+    with
+        override this.ToString() = 
+            match this with
+            | Ephemeral -> "ephemeral"
+            | InChannel -> "in_channel"
+
+type SlackResponse = 
+    {
+        responseType: SlackResponseType
+        text: string
+    }
+    with
+        override this.ToString() = 
+            "{ \"response_type\": \"" + this.responseType.ToString() + "\", \"text\": \"" + this.text + "\"}"
+
 let echoHandler(ctx: HttpContext) = 
     (
         SlackRequest.FromHttpContext ctx
         |> fun req ->
-            "{ \"response_type\": \"in_channel\", \"text\": \"" + req.Text + "\"}"
+            let resp = 
+                match req.Text with
+                | Some(t) when not(String.IsNullOrEmpty(t)) -> { SlackResponse.responseType = InChannel; text = t }
+                | _ -> { SlackResponse.responseType = Ephemeral; text = "You didn't specify anything to echo." }
+
+            resp.ToString()
             |> OK
     ) ctx
 
