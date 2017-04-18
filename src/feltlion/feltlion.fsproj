@@ -64,7 +64,7 @@
     <None Include="paket.references" />
     <None Include="paket.template" />
     <Content Include="App.config" />
-    <Content Include="Conversation.fs" />
+    <Compile Include="Conversation.fs" />
     <Compile Include="UserState.fs" />
     <Compile Include="feltlion.fs" />
   </ItemGroup>

@@ -1,6 +1,8 @@
 module feltlion
 
+open Conversation
 open System
+open System.Collections.Concurrent
 open System.Text
 open Suave
 open Suave.Filters
@@ -56,6 +58,60 @@ type SlackResponse =
         override this.ToString() = 
             "{ \"response_type\": \"" + this.responseType.ToString() + "\", \"text\": \"" + this.text + "\"}"
 
+type State = 
+    {
+        conversations: ConcurrentBag<Conversation>
+        activeDialogues: ConcurrentDictionary<string, Dialogue>
+    }
+
+// global state of available conversations, and all dialogues that have been started.
+let state = 
+    { 
+        State.conversations = new ConcurrentBag<Conversation>()
+        activeDialogues = new ConcurrentDictionary<string, Dialogue>()
+    }
+
+let newDialogueHandler(name: string, channel: string, uid: string) = 
+    match (state.conversations |> Seq.tryFind (fun c -> c.name = name)) with
+    | Some(c) ->
+        let d = 
+            {
+                Dialogue.c = c
+                n = None
+                s = DialogueState.Started
+            }
+
+        if state.activeDialogues.TryAdd(channel, d) then
+            { SlackResponse.responseType = InChannel; text = "Started new dialogue [" + name + "]" }
+        else
+            { SlackResponse.responseType = InChannel; text = "Couldn't start new dialogue [" + name + "]" }
+
+    | _ -> { SlackResponse.responseType = Ephemeral; text = "Couldn't find dialogue named [" + name + "]" }
+
+let dialogueRequestHandler(r: SlackRequest): SlackResponse = 
+    let cmdOpt = 
+        r.Text |> Option.map (fun t -> t.Split([| ' ' |]) |> List.ofArray)
+
+    match (cmdOpt, r.ChannelId, r.UserId) with
+    | (Some([cmd; dialogueName]), Some(channel), Some(userId)) when cmd = "newDialogue" ->
+        newDialogueHandler(dialogueName, channel, userId)
+    | (Some(cmd :: tail), Some(channel), Some(userId)) when cmd = "run" ->
+        let d = state.activeDialogues.Item(channel)
+        let (newDialogue, result) = runDialogue(d, String.Join(" ", tail))
+        state.activeDialogues.TryUpdate(channel, newDialogue, d) |> ignore
+        { SlackResponse.responseType = InChannel; text = result }
+    | _ -> { SlackResponse.responseType = Ephemeral; text = "Unrecognized command or something else failed" }
+
+let dialogueHandler(ctx: HttpContext) = 
+    (
+        let resp = 
+            SlackRequest.FromHttpContext ctx
+            |> dialogueRequestHandler
+
+        resp.ToString()
+        |> OK
+    ) ctx
+
 let echoHandler(ctx: HttpContext) = 
     (
         SlackRequest.FromHttpContext ctx
@@ -71,11 +127,57 @@ let echoHandler(ctx: HttpContext) =
 
 let app = 
     choose [
-        POST >=> path "/echo" >=> echoHandler >=> Writers.setMimeType "application/json"
+        POST >=> path "/echo" >=> dialogueHandler >=> Writers.setMimeType "application/json"
     ]
+
+//////////////////////////////
+// Testing content
+//////////////////////////////
+let insertTestContent() = 
+    let c = 
+        {
+            Conversation.Conversation.startNodes = 
+                [
+                    {
+                        ConversationNode.text = "This is the start of the conversation."
+                        speaker = ConversationSpeaker.Computer
+                        next = 
+                            [
+                                {
+                                    ConversationNode.text = "This is the first reply."
+                                    speaker = ConversationSpeaker.User([])
+                                    next =
+                                        [
+                                            {
+                                                ConversationNode.text = "End of first tree"
+                                                speaker = ConversationSpeaker.Computer
+                                                next = []
+                                            }
+                                        ]
+                                }
+                                {
+                                    ConversationNode.text = "This is the second reply."
+                                    speaker = ConversationSpeaker.User([])
+                                    next = 
+                                        [
+                                            {
+                                                ConversationNode.text = "End of second tree"
+                                                speaker = ConversationSpeaker.Computer
+                                                next = []
+                                            }
+                                        ]
+                                }
+                            ]
+                    }
+                ]
+            name = "testconvo"
+        }
+    state.conversations.Add(c)
+    ()
 
 [<EntryPoint>]
 let main argv =
+    insertTestContent()
     startWebServer defaultConfig app
     0
     
