@@ -1,6 +1,8 @@
 module feltlion
 
+open Argu
 open Conversation
+open FSharp.Data
 open System
 open System.Collections.Concurrent
 open System.Text
@@ -8,6 +10,14 @@ open Suave
 open Suave.Filters
 open Suave.Operators
 open Suave.Successful
+
+type Arguments = 
+    | [<Mandatory>] IncomingWebhookUrl of url: string
+with
+    interface IArgParserTemplate with
+        member this.Usage = 
+            match this with
+            | IncomingWebhookUrl _ -> "incoming webhook URL to use"
 
 type SlackRequest =
     {
@@ -62,16 +72,10 @@ type State =
     {
         conversations: ConcurrentBag<Conversation>
         activeDialogues: ConcurrentDictionary<string, Dialogue>
+        incomingWebhook: string
     }
 
-// global state of available conversations, and all dialogues that have been started.
-let state = 
-    { 
-        State.conversations = new ConcurrentBag<Conversation>()
-        activeDialogues = new ConcurrentDictionary<string, Dialogue>()
-    }
-
-let newDialogueHandler(name: string, channel: string, uid: string) = 
+let newDialogueHandler(state: State, name: string, channel: string, uid: string) = 
     match (state.conversations |> Seq.tryFind (fun c -> c.name = name)) with
     | Some(c) ->
         let d = 
@@ -82,31 +86,41 @@ let newDialogueHandler(name: string, channel: string, uid: string) =
             }
 
         if state.activeDialogues.TryAdd(channel, d) then
+            // start the dialogue automatically after 1 second
+            async {
+                do! Async.Sleep(1000)
+                let (newDialogue, result) = runDialogue(d, "")
+                state.activeDialogues.TryUpdate(channel, newDialogue, d) |> ignore
+
+                // send the request to the webhook
+                let response = "{\"text\": \"" + result + "\"}"
+                Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
+            } |> Async.StartAsTask |> ignore
             { SlackResponse.responseType = InChannel; text = "Started new dialogue [" + name + "]" }
         else
             { SlackResponse.responseType = InChannel; text = "Couldn't start new dialogue [" + name + "]" }
 
     | _ -> { SlackResponse.responseType = Ephemeral; text = "Couldn't find dialogue named [" + name + "]" }
 
-let dialogueRequestHandler(r: SlackRequest): SlackResponse = 
+let dialogueRequestHandler(state: State)(r: SlackRequest): SlackResponse = 
     let cmdOpt = 
         r.Text |> Option.map (fun t -> t.Split([| ' ' |]) |> List.ofArray)
 
     match (cmdOpt, r.ChannelId, r.UserId) with
     | (Some([cmd; dialogueName]), Some(channel), Some(userId)) when cmd = "newDialogue" ->
-        newDialogueHandler(dialogueName, channel, userId)
-    | (Some(cmd :: tail), Some(channel), Some(userId)) when cmd = "run" ->
+        newDialogueHandler(state, dialogueName, channel, userId)
+    | (Some(cmd :: tail), Some(channel), Some(_)) when cmd = "run" ->
         let d = state.activeDialogues.Item(channel)
         let (newDialogue, result) = runDialogue(d, String.Join(" ", tail))
         state.activeDialogues.TryUpdate(channel, newDialogue, d) |> ignore
         { SlackResponse.responseType = InChannel; text = result }
     | _ -> { SlackResponse.responseType = Ephemeral; text = "Unrecognized command or something else failed" }
 
-let dialogueHandler(ctx: HttpContext) = 
+let dialogueHandler(state: State)(ctx: HttpContext) = 
     (
         let resp = 
             SlackRequest.FromHttpContext ctx
-            |> dialogueRequestHandler
+            |> (dialogueRequestHandler(state))
 
         resp.ToString()
         |> OK
@@ -125,15 +139,16 @@ let echoHandler(ctx: HttpContext) =
             |> OK
     ) ctx
 
-let app = 
+let app(state: State) = 
+    let handler = dialogueHandler(state)
     choose [
-        POST >=> path "/echo" >=> dialogueHandler >=> Writers.setMimeType "application/json"
+        POST >=> path "/echo" >=> handler >=> Writers.setMimeType "application/json"
     ]
 
 //////////////////////////////
 // Testing content
 //////////////////////////////
-let insertTestContent() = 
+let insertTestContent(state: State) = 
     let c = 
         {
             Conversation.Conversation.startNodes = 
@@ -177,7 +192,18 @@ let insertTestContent() =
 
 [<EntryPoint>]
 let main argv =
-    insertTestContent()
-    startWebServer defaultConfig app
+    let parser = ArgumentParser.Create<Arguments>()
+    let results = parser.Parse(argv)
+
+    // global state of available conversations, and all dialogues that have been started.
+    let state = 
+        { 
+            State.conversations = new ConcurrentBag<Conversation>()
+            activeDialogues = new ConcurrentDictionary<string, Dialogue>()
+            incomingWebhook = results.GetResult(<@ IncomingWebhookUrl @>)
+        }
+
+    insertTestContent(state)
+    startWebServer defaultConfig (app(state))
     0
     
