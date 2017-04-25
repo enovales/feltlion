@@ -95,6 +95,23 @@ let newDialogueHandler(state: State, name: string, channel: string, uid: string)
                 // send the request to the webhook
                 let response = "{\"text\": \"" + result + "\"}"
                 Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
+
+                do! Async.Sleep(1000)
+                // if the dialogue is in the ComputerSpeaking state, set up an async handler to advance it to the
+                // next state after a moment.
+                match newDialogue.s with
+                | DialogueState.ComputerSpeaking -> 
+                    async {
+                        do! Async.Sleep(1000)
+                        let (newDialogue2, result2) = runDialogue(newDialogue, "")
+                        state.activeDialogues.TryUpdate(channel, newDialogue2, newDialogue) |> ignore
+
+                        // send the request to the webhook
+                        let response = "{\"text\": \"" + result2 + "\"}"
+                        Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
+                    } |> Async.StartAsTask |> ignore
+                | _ -> ()
+                
             } |> Async.StartAsTask |> ignore
             { SlackResponse.responseType = InChannel; text = "Started new dialogue [" + name + "]" }
         else
@@ -113,6 +130,21 @@ let dialogueRequestHandler(state: State)(r: SlackRequest): SlackResponse =
         let d = state.activeDialogues.Item(channel)
         let (newDialogue, result) = runDialogue(d, String.Join(" ", tail))
         state.activeDialogues.TryUpdate(channel, newDialogue, d) |> ignore
+
+        // if the dialogue is in the ComputerSpeaking state, set up an async handler to advance it to the
+        // next state after a moment.
+        match newDialogue.s with
+        | DialogueState.ComputerSpeaking -> 
+            async {
+                do! Async.Sleep(1000)
+                let (newDialogue2, result2) = runDialogue(newDialogue, "")
+                state.activeDialogues.TryUpdate(channel, newDialogue2, newDialogue) |> ignore
+
+                // send the request to the webhook
+                let response = "{\"text\": \"" + result2 + "\"}"
+                Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
+            } |> Async.StartAsTask |> ignore
+        | _ -> ()
         { SlackResponse.responseType = InChannel; text = result }
     | _ -> { SlackResponse.responseType = Ephemeral; text = "Unrecognized command or something else failed" }
 
