@@ -18,6 +18,12 @@ type Conversation =
         startNodes: ConversationNode seq
         name: string
     }
+    with
+        static member Empty = 
+            {
+                Conversation.startNodes = []
+                name = ""
+            }
 
 type DialogueState = 
     | Started
@@ -35,6 +41,13 @@ type Dialogue =
 
         s: DialogueState
     }
+    with
+        static member Empty = 
+            {
+                Dialogue.c = Conversation.Empty
+                n = None
+                s = DialogueState.Started
+            }
 
 let runDialogue(d: Dialogue, i: string): (Dialogue * string) = 
     match d.s with
@@ -49,7 +62,10 @@ let runDialogue(d: Dialogue, i: string): (Dialogue * string) =
             // build choice text
             let choiceText = 
                 String.Join("\n", choices |> Seq.mapi (fun n t -> (n + 1).ToString() + ") " + t))
-            ({ d with s = WaitingForResponse }, t + "\n" + choiceText)
+
+            match choices |> Seq.isEmpty with
+            | true -> ({d with s = Terminated }, t + "\n" + choiceText)
+            | false -> ({ d with s = WaitingForResponse }, t + "\n" + choiceText)
         | _ -> ({ d with s = Terminated }, "[dialogue ended]")
     | WaitingForResponse ->
         let choice = Int32.Parse(i)

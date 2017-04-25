@@ -85,12 +85,20 @@ let newDialogueHandler(state: State, name: string, channel: string, uid: string)
                 s = DialogueState.Started
             }
 
-        if state.activeDialogues.TryAdd(channel, d) then
+        let mutable existingDialogue: Dialogue = Dialogue.Empty
+        match state.activeDialogues.TryGetValue(channel, &existingDialogue) with
+        | true when existingDialogue.s <> DialogueState.Terminated ->
+            { SlackResponse.responseType = InChannel; text = "Dialogue [" + name + "] already in progress" }
+        | s ->
             // start the dialogue automatically after 1 second
             async {
                 do! Async.Sleep(1000)
                 let (newDialogue, result) = runDialogue(d, "")
-                state.activeDialogues.TryUpdate(channel, newDialogue, d) |> ignore
+
+                if (not s) then 
+                    state.activeDialogues.TryAdd(channel, newDialogue) |> ignore
+                else
+                    state.activeDialogues.TryUpdate(channel, newDialogue, existingDialogue) |> ignore
 
                 // send the request to the webhook
                 let response = "{\"text\": \"" + result + "\"}"
@@ -114,9 +122,6 @@ let newDialogueHandler(state: State, name: string, channel: string, uid: string)
                 
             } |> Async.StartAsTask |> ignore
             { SlackResponse.responseType = InChannel; text = "Started new dialogue [" + name + "]" }
-        else
-            { SlackResponse.responseType = InChannel; text = "Couldn't start new dialogue [" + name + "]" }
-
     | _ -> { SlackResponse.responseType = Ephemeral; text = "Couldn't find dialogue named [" + name + "]" }
 
 let dialogueRequestHandler(state: State)(r: SlackRequest): SlackResponse = 
