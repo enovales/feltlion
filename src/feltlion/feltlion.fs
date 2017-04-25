@@ -75,6 +75,22 @@ type State =
         incomingWebhook: string
     }
 
+let advanceComputerSpeakingIfNecessary(state: State, d: Dialogue, channel: string): unit = 
+    // if the dialogue is in the ComputerSpeaking state, set up an async handler to advance it to the
+    // next state after a moment.
+    match d.s with
+    | DialogueState.ComputerSpeaking -> 
+        async {
+            do! Async.Sleep(1000)
+            let (newDialogue2, result2) = runDialogue(d, "")
+            state.activeDialogues.TryUpdate(channel, newDialogue2, d) |> ignore
+
+            // send the request to the webhook
+            let response = "{\"text\": \"" + result2 + "\"}"
+            Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
+        } |> Async.StartAsTask |> ignore
+    | _ -> ()    
+
 let newDialogueHandler(state: State, name: string, channel: string, uid: string) = 
     match (state.conversations |> Seq.tryFind (fun c -> c.name = name)) with
     | Some(c) ->
@@ -105,21 +121,7 @@ let newDialogueHandler(state: State, name: string, channel: string, uid: string)
                 Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
 
                 do! Async.Sleep(1000)
-                // if the dialogue is in the ComputerSpeaking state, set up an async handler to advance it to the
-                // next state after a moment.
-                match newDialogue.s with
-                | DialogueState.ComputerSpeaking -> 
-                    async {
-                        do! Async.Sleep(1000)
-                        let (newDialogue2, result2) = runDialogue(newDialogue, "")
-                        state.activeDialogues.TryUpdate(channel, newDialogue2, newDialogue) |> ignore
-
-                        // send the request to the webhook
-                        let response = "{\"text\": \"" + result2 + "\"}"
-                        Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
-                    } |> Async.StartAsTask |> ignore
-                | _ -> ()
-                
+                advanceComputerSpeakingIfNecessary(state, newDialogue, channel)                
             } |> Async.StartAsTask |> ignore
             { SlackResponse.responseType = InChannel; text = "Started new dialogue [" + name + "]" }
     | _ -> { SlackResponse.responseType = Ephemeral; text = "Couldn't find dialogue named [" + name + "]" }
@@ -136,20 +138,7 @@ let dialogueRequestHandler(state: State)(r: SlackRequest): SlackResponse =
         let (newDialogue, result) = runDialogue(d, String.Join(" ", tail))
         state.activeDialogues.TryUpdate(channel, newDialogue, d) |> ignore
 
-        // if the dialogue is in the ComputerSpeaking state, set up an async handler to advance it to the
-        // next state after a moment.
-        match newDialogue.s with
-        | DialogueState.ComputerSpeaking -> 
-            async {
-                do! Async.Sleep(1000)
-                let (newDialogue2, result2) = runDialogue(newDialogue, "")
-                state.activeDialogues.TryUpdate(channel, newDialogue2, newDialogue) |> ignore
-
-                // send the request to the webhook
-                let response = "{\"text\": \"" + result2 + "\"}"
-                Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
-            } |> Async.StartAsTask |> ignore
-        | _ -> ()
+        advanceComputerSpeakingIfNecessary(state, newDialogue, channel)
         { SlackResponse.responseType = InChannel; text = result }
     | _ -> { SlackResponse.responseType = Ephemeral; text = "Unrecognized command or something else failed" }
 
