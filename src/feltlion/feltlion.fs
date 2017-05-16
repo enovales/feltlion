@@ -176,13 +176,17 @@ type State =
     }
 
 let buildInteractiveResponse(choices: string seq) = 
+    let indexedChoices = 
+        choices
+        |> Seq.mapi(fun i s -> (i + 1).ToString() + ") " + s)
+
     {
-        SlackInteractiveResponse.text = "choice"
+        SlackInteractiveResponse.text = String.Join("\n", indexedChoices)
         buttonPrompt = "Make your choice"
         fallback = "None"
         callbackId = "none"
         color = "#7F7F7F"
-        actions = choices |> Seq.mapi (fun i c -> { SlackInteractiveAction.name = i.ToString(); text = c; value = i.ToString() }) |> Array.ofSeq
+        actions = choices |> Seq.mapi (fun i _ -> { SlackInteractiveAction.name = (i + 1).ToString(); text = (i + 1).ToString(); value = (i + 1).ToString() }) |> Array.ofSeq
     }
 
 let advanceComputerSpeakingIfNecessary(state: State, d: Dialogue, channel: string): unit = 
@@ -190,27 +194,40 @@ let advanceComputerSpeakingIfNecessary(state: State, d: Dialogue, channel: strin
     // next state after a moment.
     match d.s with
     | DialogueState.ComputerSpeaking -> 
-        logSimple "in advanceComputerSpeakingIfNecessary, DialogueState.ComputerSpeaking branch"
+        logSimple "advanceComputerSpeakingIfNecessary(): DialogueState.ComputerSpeaking branch"
         async {
-            logSimple "in async handler, before sleep"
+            logSimple "advanceComputerSpeakingIfNecessary(): in async handler, before sleep"
             do! Async.Sleep(1000)
-            logSimple "in async handler, after sleep"
+            logSimple "advanceComputerSpeakingIfNecessary(): in async handler, after sleep"
             let (newDialogue2, result2, choices2) = runDialogue(d, "")
-            logSimple "in async handler, after runDialogue"
-            state.activeDialogues.TryUpdate(channel, newDialogue2, d) |> ignore
-            logSimple "in async handler, after TryUpdate"
+            logSimple "advanceComputerSpeakingIfNecessary(): in async handler, after runDialogue"
+            let updateSuccess = state.activeDialogues.TryUpdate(channel, newDialogue2, d)
+            logSimple("advanceComputerSpeakingIfNecessary(): updateSuccess is " + updateSuccess.ToString())
+            logSimple "advanceComputerSpeakingIfNecessary(): in async handler, after TryUpdate"
 
-            // send the request to the webhook
-            let response = buildInteractiveResponse(choices2)
-            logSimple "in async handler, after buildInteractiveResponse"
-            logSimple(response.ToString())
-            logSimple "in async handler, after logging response.ToString()"
-            //let response = "{\"text\": \"" + result2 + "\"}"
-            Console.WriteLine(response.ToString())
-            Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response.ToString()), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
+            logSimple("advanceComputerSpeakingIfNecessary(): newDialogue2.s is " + newDialogue2.s.ToString())
+            logSimple("advanceComputerSpeakingIfNecessary(): result2 is " + result2)
+            logSimple("advanceComputerSpeakingIfNecessary(): choices2 is " + String.Join(",", choices2))
+
+            if choices2 |> Seq.isEmpty then
+                let response = 
+                    {
+                        SlackResponse.responseType = SlackResponseType.InChannel
+                        text = result2
+                    }
+                Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response.ToString()), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json)]) |> ignore
+            else
+                // send the request to the webhook
+                let response = buildInteractiveResponse(choices2)
+                logSimple "advanceComputerSpeakingIfNecessary(): in async handler, after buildInteractiveResponse"
+                logSimple(response.ToString())
+                logSimple "advanceComputerSpeakingIfNecessary(): in async handler, after logging response.ToString()"
+                //let response = "{\"text\": \"" + result2 + "\"}"
+                Console.WriteLine(response.ToString())
+                Http.RequestString(state.incomingWebhook, httpMethod = "POST", body = TextRequest(response.ToString()), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
         } |> Async.StartAsTask |> ignore
     | _ ->
-        logSimple "in advanceComputerSpeakingIfNecessary, catch-all branch"
+        logSimple "advanceComputerSpeakingIfNecessary(): catch-all branch"
         ()    
 
 let newDialogueHandler(state: State, name: string, channel: string, uid: string) = 
@@ -268,9 +285,12 @@ let buttonRequestHandler(state: State)(r: SlackButtonRequest): SlackResponse =
     logSimple("buttonRequestHandler(): r = " + r.ToString())
     match (cmdOpt, r.ChannelId, r.UserId) with
     | (Some(cmd :: tail), Some(channel), Some(_)) when cmd = "run" ->
+        logSimple("buttonRequestHandler(): inside match handler")
         let d = state.activeDialogues.Item(channel)
         let (newDialogue, result, choices) = runDialogue(d, String.Join(" ", tail))
-        state.activeDialogues.TryUpdate(channel, newDialogue, d) |> ignore
+        let updateSuccess = state.activeDialogues.TryUpdate(channel, newDialogue, d)
+        logSimple("buttonRequestHandler(): updateSuccess is " + updateSuccess.ToString())
+
         advanceComputerSpeakingIfNecessary(state, newDialogue, channel)
         { SlackResponse.responseType = InChannel; text = result }
     | _ -> { SlackResponse.responseType = Ephemeral; text = "Unrecognized button action" }
